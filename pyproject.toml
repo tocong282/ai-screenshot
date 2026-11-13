@@ -1,6 +1,6 @@
 [project]
 name = "ai-screenshot"
-version = "0.2.0"
+version = "0.3.0"
 description = "Screenshot -> OCR -> LLM answer -> clipboard, on Linux, macOS and Windows"
 requires-python = ">=3.9"
 dependencies = [
@@ -11,6 +11,12 @@ dependencies = [
 
 [project.scripts]
 ai-screenshot = "ai_screenshot:main"
+
+[project.optional-dependencies]
+bundle = [
+    "rapidocr-onnxruntime>=1.2.3",
+    "pyinstaller>=6.6",
+]
 
 [build-system]
 requires = ["hatchling"]

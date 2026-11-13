@@ -33,6 +33,7 @@ DEFAULTS = {
     "model": "cx/gpt-5.3-codex",
     "lang": "eng",
     "tessdata_dir": "",
+    "engine": "auto",
     "prompt": DEFAULT_PROMPT,
     "max_tokens": 50,
     "temperature": 0.1,
@@ -51,7 +52,7 @@ SETTINGS_HTML = """<!doctype html><html><head><meta charset="utf-8">
 body{font:14px/1.55 system-ui,sans-serif;max-width:660px;margin:40px auto;padding:0 16px}
 h1{font-size:18px;margin-bottom:2px}
 label{display:block;margin:14px 0 4px;font-weight:600}
-input,textarea{width:100%;padding:8px;box-sizing:border-box;font:inherit;
+input,textarea,select{width:100%;padding:8px;box-sizing:border-box;font:inherit;
  border:1px solid rgba(128,128,128,.45);border-radius:6px;background:transparent;color:inherit}
 textarea{min-height:150px;resize:vertical}
 .row{display:flex;gap:12px}.row>div{flex:1}
@@ -71,6 +72,11 @@ small{opacity:.65;font-weight:400}
 <div class="row">
  <div><label>Model</label><input id="model"></div>
  <div><label>OCR language</label><input id="lang" placeholder="eng"></div>
+ <div><label>OCR engine</label><select id="engine">
+  <option value="auto">auto (bundled)</option>
+  <option value="tesseract">tesseract</option>
+  <option value="rapidocr">rapidocr</option>
+ </select></div>
 </div>
 <label>API key</label><input id="api_key" type="password" autocomplete="off" spellcheck="false">
 <div><small id="keyset"></small></div>
@@ -91,7 +97,7 @@ small{opacity:.65;font-weight:400}
 <script>
 const CFG=__CONFIG__, API="__API__";
 const $=id=>document.getElementById(id);
-const fields=["base_url","model","lang","api_key","tessdata_dir","max_tokens","temperature","prompt"];
+const fields=["base_url","model","lang","engine","api_key","tessdata_dir","max_tokens","temperature","prompt"];
 for(const k of fields) if(k in CFG) $(k).value = CFG[k];
 $("cfgpath").textContent = CFG.path;
 $("keyset").textContent = CFG.api_key_set ? "key stored — leave blank to keep it" : "no key stored yet";
@@ -207,15 +213,48 @@ def _have(binary):
 
 
 # ------------------------------------------------------------------ OCR
-def ocr(path, cfg):
-    import pytesseract
-    from PIL import Image
+_RAPID = None
 
-    kwargs = {"lang": cfg["lang"]}
-    if cfg.get("tessdata_dir"):
-        kwargs["config"] = f'--tessdata-dir "{cfg["tessdata_dir"]}"'
-    with Image.open(path) as img:
-        return " ".join(pytesseract.image_to_string(img, **kwargs).split())
+
+def _frozen():
+    return bool(getattr(sys, "frozen", False))
+
+
+def _rapidocr():
+    """Lazy RapidOCR engine, reused across captures (model load ~1s)."""
+    global _RAPID
+    if _RAPID is None:
+        from rapidocr_onnxruntime import RapidOCR
+
+        _RAPID = RapidOCR()
+    return _RAPID
+
+
+def resolve_engine(cfg):
+    engine = (cfg.get("engine") or "auto").lower()
+    if engine not in ("auto", "tesseract", "rapidocr"):
+        raise ValueError(f"unknown OCR engine: {engine}")
+    if engine == "auto":
+        # Frozen builds carry RapidOCR; source checkouts use the system binary.
+        engine = "rapidocr" if _frozen() or not _have("tesseract") else "tesseract"
+    return engine
+
+
+def ocr(path, cfg):
+    engine = resolve_engine(cfg)
+    if engine == "rapidocr":
+        result, _ = _rapidocr()(path)
+        text = " ".join(box[1] for box in (result or []))
+    else:
+        import pytesseract
+        from PIL import Image
+
+        kwargs = {"lang": cfg["lang"]}
+        if cfg.get("tessdata_dir"):
+            kwargs["config"] = f'--tessdata-dir "{cfg["tessdata_dir"]}"'
+        with Image.open(path) as img:
+            text = pytesseract.image_to_string(img, **kwargs)
+    return " ".join(text.split())
 
 
 # ------------------------------------------------------------- clipboard
@@ -240,6 +279,30 @@ def copy_text(text):
     except (OSError, subprocess.SubprocessError):
         return False
     return False
+
+
+def notify(answer):
+    """Show the answer when there is no terminal to read it from (double-click)."""
+    quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    text = answer[:2000]
+    try:
+        system = platform_key()
+        if system == "windows":
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(None, text, "ai-screenshot", 0x40 | 0x1000)
+        elif system == "macos":
+            subprocess.run(
+                ["osascript", "-e", "on run argv", "-e",
+                 'display dialog (item 1 of argv) buttons {"OK"} default button 1 '
+                 'with title "ai-screenshot" giving up after 300', "-e", "end run", text],
+                timeout=310, **quiet,
+            )
+        elif _have("notify-send"):
+            subprocess.run(["notify-send", "-a", "ai-screenshot", "ai-screenshot", text[:400]],
+                           timeout=15, **quiet)
+    except Exception:
+        pass
 
 
 # ------------------------------------------------------------------ LLM
@@ -276,12 +339,16 @@ def clean_form(data, current):
     model = str(data.get("model", current["model"])).strip()
     if not model:
         raise ValueError("model is required")
+    engine = str(data.get("engine") or current.get("engine") or "auto").lower()
+    if engine not in ("auto", "tesseract", "rapidocr"):
+        raise ValueError("engine must be auto, tesseract or rapidocr")
     cfg = dict(current)
     cfg.update(
         base_url=base_url,
         model=model,
         lang=str(data.get("lang") or current["lang"]).strip(),
         tessdata_dir=str(data.get("tessdata_dir") or "").strip(),
+        engine=engine,
         prompt=str(data.get("prompt") or "").strip() or DEFAULT_PROMPT,
         max_tokens=number("max_tokens", int, 1, 4096),
         temperature=number("temperature", float, 0.0, 2.0),
@@ -419,6 +486,8 @@ def run(cfg):
         print("Copied to clipboard.", file=sys.stderr)
     else:
         print("Clipboard copy failed (answer printed above).", file=sys.stderr)
+    if _frozen() or os.environ.get("AI_SCREENSHOT_NOTIFY") == "1":
+        notify(answer)
 
 
 def selftest():
@@ -441,7 +510,18 @@ def selftest():
 
     text = ocr(str(img_path), cfg).upper()
     assert "HELLO" in text and "42" in text, f"OCR mismatch: {text!r}"
-    print("PASS ocr:", text)
+    used = resolve_engine(cfg)
+    print(f"PASS ocr ({used}):", text)
+
+    if used != "rapidocr":
+        try:
+            import rapidocr_onnxruntime  # noqa: F401
+        except ImportError:
+            print("SKIP ocr (rapidocr): not installed")
+        else:
+            rapid_text = ocr(str(img_path), dict(cfg, engine="rapidocr")).upper()
+            assert "HELLO" in rapid_text and "42" in rapid_text, f"rapidocr mismatch: {rapid_text!r}"
+            print("PASS ocr (rapidocr):", rapid_text)
 
     payload = {"choices": [{"message": {"content": "42"}, "index": 0, "finish_reason": "stop"}]}
 

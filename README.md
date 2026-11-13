@@ -1,28 +1,54 @@
 # ai-screenshot
 
-Grab the screen, OCR it with Tesseract, ask an OpenAI-compatible model for the
-answer, put the answer on the clipboard.
+Grab the screen, OCR it, ask an OpenAI-compatible model for the answer, put the
+answer on the clipboard.
 
 Works on Linux (X11 + KDE/GNOME Wayland), macOS and Windows.
 
-## Install
+## Install (no Python needed)
 
-**1. Tesseract** (external binary, not a Python dep):
+Download from [Releases](https://github.com/tocong282/ai-screenshot/releases):
 
-| OS | Command |
+| OS | File | Notes |
+| --- | --- | --- |
+| Windows | `ai-screenshot-<version>-windows-x64-setup.exe` | installer: Start Menu + desktop shortcut, Ctrl+Alt+Q capture, Ctrl+Alt+S settings |
+| Windows | `ai-screenshot-<version>-windows-x64.zip` | portable single exe |
+| macOS (Apple Silicon) | `ai-screenshot-<version>-macos-arm64.dmg` | drag to Applications |
+| Linux x64 | `ai-screenshot-<version>-linux-x64.tar.gz` | `tar xzf`, run `./ai-screenshot` |
+
+These builds bundle the OCR engine (RapidOCR, ONNX) — Tesseract is **not**
+required. Intel Macs and other Linux archs: use the source install below.
+
+The binaries are not code-signed:
+
+- Windows SmartScreen: *More info* -> *Run anyway*.
+- macOS Gatekeeper: right-click the app -> *Open* (once), or
+  `xattr -dr com.apple.quarantine /Applications/ai-screenshot.app`.
+  macOS asks for Screen Recording permission on first capture.
+
+macOS shortcut: Shortcuts.app -> *Run Shell Script* ->
+`/Applications/ai-screenshot.app/Contents/MacOS/ai-screenshot`, assign a key.
+
+## Install from source
+
+Needs Python 3.9+ and [uv](https://docs.astral.sh/uv/), plus Tesseract:
+
+| OS | Tesseract |
 | --- | --- |
 | Arch | `sudo pacman -S tesseract tesseract-data-eng` |
 | Debian/Ubuntu | `sudo apt install tesseract-ocr tesseract-ocr-eng` |
 | macOS | `brew install tesseract` |
 | Windows | `choco install tesseract` (or the UB-Mannheim installer) |
 
-**2. The app** (needs Python 3.9+ and [uv](https://docs.astral.sh/uv/)):
-
 ```bash
 uv tool install git+https://github.com/tocong282/ai-screenshot
 ```
 
-Pinned release: `uv tool install git+https://github.com/tocong282/ai-screenshot@v0.1.0`
+Pinned release: `uv tool install git+https://github.com/tocong282/ai-screenshot@v0.3.0`
+
+OCR engine is picked by `engine` in config: `auto` (default) uses the bundled
+RapidOCR in frozen builds and the system Tesseract in source checkouts; force
+`tesseract` or `rapidocr` to override.
 
 ## Configure
 
@@ -92,12 +118,15 @@ Clipboard: `pbcopy` / PowerShell `Set-Clipboard` / `wl-copy` / `xclip` / `xsel`.
 Version lives in `pyproject.toml`. Tag to publish:
 
 ```bash
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.3.1 && git push origin v0.3.1
 ```
 
-`.github/workflows/release.yml` builds wheel + sdist and creates the GitHub
-Release. CI (`.github/workflows/ci.yml`) runs `--selftest` on Linux, macOS and
+`.github/workflows/release.yml` freezes a PyInstaller binary per OS, smoke-tests
+it with `--selftest` on that runner, packs Linux tarball / macOS dmg / Windows
+installer + zip, then creates the GitHub Release with wheel + sdist.
+`.github/workflows/ci.yml` runs `--selftest` from source on Linux, macOS and
 Windows for every push.
 
-Native installers (PyInstaller `.exe`/`.app`) are not built yet — source install
-is the supported path.
+Known limits of the packaged builds: unsigned (Gatekeeper / SmartScreen prompts),
+macOS dmg is Apple Silicon only, Linux tarball built on Ubuntu 22.04.
+

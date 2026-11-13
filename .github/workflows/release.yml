@@ -2,12 +2,90 @@ name: release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            artifact: linux-x64
+          - os: macos-latest
+            artifact: macos-arm64
+          - os: windows-latest
+            artifact: windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Version
+        id: v
+        shell: bash
+        run: echo "version=$(python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")" >> "$GITHUB_OUTPUT"
+
+      - name: Install build deps
+        shell: bash
+        run: pip install -e ".[bundle]"
+
+      - name: Freeze
+        shell: bash
+        run: |
+          pyinstaller --noconfirm --clean --onefile --name ai-screenshot \
+            --collect-all rapidocr_onnxruntime --collect-all onnxruntime \
+            ai_screenshot.py
+
+      - name: Smoke test frozen binary
+        shell: bash
+        run: |
+          BIN=dist/ai-screenshot
+          [ -f "$BIN.exe" ] && BIN="$BIN.exe"
+          "$BIN" --version
+          "$BIN" --selftest
+          "$BIN" --help > /dev/null
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          tar -C dist -czf "dist/ai-screenshot-$V-linux-x64.tar.gz" ai-screenshot
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APP_VERSION: ${{ steps.v.outputs.version }}
+        run: bash packaging/macos-bundle.sh
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          cd dist && 7z a "ai-screenshot-$V-windows-x64.zip" ai-screenshot.exe && cd ..
+          choco install -y innosetup
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" /DMyAppVersion="$V" packaging/installer.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/ai-screenshot-*.zip
+            dist/ai-screenshot-*.tar.gz
+            dist/ai-screenshot-*.dmg
+            dist/ai-screenshot-*-setup.exe
+          if-no-files-found: error
+
   publish:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,7 +93,13 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install build && python -m build
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --title "$GITHUB_REF_NAME"
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* artifacts/* \
+            --generate-notes --title "$GITHUB_REF_NAME"
