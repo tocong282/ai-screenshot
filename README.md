@@ -57,8 +57,15 @@ system Tesseract has no English data (`--tessdata-dir`).
 
 ```bash
 ai-screenshot            # capture -> ocr -> ask -> clipboard
-ai-screenshot --selftest # offline check of OCR + API + clipboard paths
+ai-screenshot --settings # open the settings form in your browser
+ai-screenshot --selftest # offline check of OCR, API, clipboard, settings server
 ```
+
+`--settings` (alias `--gui`) starts a throwaway HTTP server on `127.0.0.1` with a
+random port and a random URL token, then opens the page. It edits the same
+`config.json` the CLI reads, with Save / Test API / Capture + OCR buttons. The
+stored API key is never sent to the browser: the field starts blank and only
+overwrites when you type a new key. The server exits on Ctrl-C.
 
 Bind it to a key. No resident process needed:
 

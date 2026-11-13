@@ -1,6 +1,6 @@
 [project]
 name = "ai-screenshot"
-version = "0.1.0"
+version = "0.2.0"
 description = "Screenshot -> OCR -> LLM answer -> clipboard, on Linux, macOS and Windows"
 requires-python = ">=3.9"
 dependencies = [
