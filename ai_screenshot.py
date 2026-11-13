@@ -258,6 +258,13 @@ def main(argv=None):
     try:
         if "--selftest" in argv:
             selftest()
+        elif "--version" in argv:
+            from importlib.metadata import version
+
+            try:
+                print("ai-screenshot", version("ai-screenshot"))
+            except Exception:
+                print("ai-screenshot unknown (source checkout)")
         elif "-h" in argv or "--help" in argv:
             print(__doc__)
         else:
