@@ -1,6 +1,6 @@
 #define MyAppName "ai-screenshot"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.0.0"
+  #define MyAppVersion GetEnv("APP_VERSION")
 #endif
 
 [Setup]

@@ -68,11 +68,14 @@ jobs:
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
+        env:
+          APP_VERSION: ${{ steps.v.outputs.version }}
         run: |
-          V="${{ steps.v.outputs.version }}"
+          V="$APP_VERSION"
           cd dist && 7z a "ai-screenshot-$V-windows-x64.zip" ai-screenshot.exe && cd ..
           choco install -y innosetup
-          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" /DMyAppVersion="$V" packaging/installer.iss
+          # /D would be mangled into a path by Git Bash, so the version comes from APP_VERSION
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" packaging/installer.iss
 
       - uses: actions/upload-artifact@v4
         with:
@@ -86,6 +89,7 @@ jobs:
 
   publish:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
