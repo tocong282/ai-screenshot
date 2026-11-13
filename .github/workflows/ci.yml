@@ -1,0 +1,31 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Tesseract (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then brew install tesseract; else sudo apt-get update && sudo apt-get install -y tesseract-ocr tesseract-ocr-eng; fi
+      - name: Install Tesseract (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install -y tesseract
+          "$env:ProgramFiles\Tesseract-OCR" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      - run: pip install -e .
+      - run: ai-screenshot --selftest
