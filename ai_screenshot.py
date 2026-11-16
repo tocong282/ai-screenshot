@@ -386,6 +386,12 @@ def notify(answer):
                 'with title "ai-screenshot" giving up after 300', "-e", "end run", text],
                 timeout=310, env=_child_env(), **quiet,
             )
+        elif _have("kdialog"):
+            subprocess.run(["kdialog", "--title", "ai-screenshot", "--msgbox", text],
+                           timeout=310, env=_child_env(), **quiet)
+        elif _have("zenity"):
+            subprocess.run(["zenity", "--info", "--title=ai-screenshot", "--text", text],
+                           timeout=310, env=_child_env(), **quiet)
         elif _have("notify-send"):
             subprocess.run(["notify-send", "-a", "ai-screenshot", "ai-screenshot", text[:400]],
                            timeout=15, env=_child_env(), **quiet)
