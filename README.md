@@ -112,6 +112,9 @@ appends to `log.txt` there. Common causes:
   `http://localhost:20128/v1` is a **local** proxy; on another machine point it
   at the real endpoint or start the proxy there.
 - `api_key: MISSING` — fill it in `--settings`.
+- `api: FAIL ... finished_reason=max_tokens` / empty answer — reasoning models
+  spend tokens thinking before writing. Raise `max_tokens` (512 default, 2048+
+  for GPT-5-class models).
 
 ## Use
 

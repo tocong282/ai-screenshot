@@ -37,7 +37,7 @@ DEFAULTS = {
     "tessdata_dir": "",
     "engine": "auto",
     "prompt": DEFAULT_PROMPT,
-    "max_tokens": 50,
+    "max_tokens": 512,
     "temperature": 0.1,
 }
 ENV = {
@@ -85,7 +85,7 @@ small{opacity:.65;font-weight:400}
 <label>Tessdata dir <small>optional, when system Tesseract lacks lang data</small></label>
 <input id="tessdata_dir" placeholder="">
 <div class="row">
- <div><label>max_tokens</label><input id="max_tokens" type="number" min="1" max="4096"></div>
+ <div><label>max_tokens</label><input id="max_tokens" type="number" min="1" max="32768"></div>
  <div><label>temperature</label><input id="temperature" type="number" step="0.1" min="0" max="2"></div>
 </div>
 <label>Prompt <small>extracted text is appended</small></label><textarea id="prompt"></textarea>
@@ -201,6 +201,15 @@ def load_config(create=True):
 
 
 # ---------------------------------------------------------------- capture
+def _child_env():
+    """PyInstaller puts its _MEI dir on LD_LIBRARY_PATH; external tools must not inherit it."""
+    env = dict(os.environ)
+    if _frozen():
+        for key in ("LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"):
+            env.pop(key, None)
+    return env
+
+
 def _nonempty(path):
     p = Path(path)
     return p.exists() and p.stat().st_size > 0
@@ -266,7 +275,7 @@ def capture(path):
             reasons.append(f"{cmd[0]}: not installed")
             continue
         try:
-            proc = subprocess.run(cmd, capture_output=True, timeout=60, text=True)
+            proc = subprocess.run(cmd, capture_output=True, timeout=60, text=True, env=_child_env())
         except (OSError, subprocess.SubprocessError) as exc:
             reasons.append(f"{cmd[0]}: {type(exc).__name__}: {exc}")
             continue
@@ -343,16 +352,16 @@ def copy_text(text):
     quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     try:
         if system == "macos":
-            return subprocess.run(["pbcopy"], input=text.encode(), timeout=15, **quiet).returncode == 0
+            return subprocess.run(["pbcopy"], input=text.encode(), timeout=15, env=_child_env(), **quiet).returncode == 0
         if system == "windows":
             ps = "Set-Clipboard -Value ([Console]::In.ReadToEnd())"
             return subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
-                input=text.encode("utf-8"), timeout=20, **quiet,
+                ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps],
+                input=text.encode("utf-8"), timeout=20, env=_child_env(), **quiet,
             ).returncode == 0
         for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard", "-i"], ["xsel", "-b", "-i"]):
             if _have(cmd[0]):
-                r = subprocess.run(cmd, input=text.encode("utf-8"), timeout=15, **quiet)
+                r = subprocess.run(cmd, input=text.encode("utf-8"), timeout=15, env=_child_env(), **quiet)
                 if r.returncode == 0:
                     return True
     except (OSError, subprocess.SubprocessError):
@@ -374,12 +383,12 @@ def notify(answer):
             subprocess.run(
                 ["osascript", "-e", "on run argv", "-e",
                  'display dialog (item 1 of argv) buttons {"OK"} default button 1 '
-                 'with title "ai-screenshot" giving up after 300', "-e", "end run", text],
-                timeout=310, **quiet,
+                'with title "ai-screenshot" giving up after 300', "-e", "end run", text],
+                timeout=310, env=_child_env(), **quiet,
             )
         elif _have("notify-send"):
             subprocess.run(["notify-send", "-a", "ai-screenshot", "ai-screenshot", text[:400]],
-                           timeout=15, **quiet)
+                           timeout=15, env=_child_env(), **quiet)
     except Exception:
         pass
 
@@ -396,7 +405,14 @@ def ask(text, cfg, client=None):
         max_tokens=cfg["max_tokens"],
         temperature=cfg["temperature"],
     )
-    return (response.choices[0].message.content or "").strip()
+    choice = response.choices[0]
+    content = (choice.message.content or "").strip()
+    if not content:
+        hint = ("Model spent all max_tokens before writing an answer; raise max_tokens in --settings."
+                if choice.finish_reason == "max_tokens"
+                else "Model returned no text.")
+        raise RuntimeError(f"{hint} (finish_reason={choice.finish_reason}, model={response.model or cfg['model']})")
+    return content
 
 
 # -------------------------------------------------------------- settings UI
@@ -429,7 +445,7 @@ def clean_form(data, current):
         tessdata_dir=str(data.get("tessdata_dir") or "").strip(),
         engine=engine,
         prompt=str(data.get("prompt") or "").strip() or DEFAULT_PROMPT,
-        max_tokens=number("max_tokens", int, 1, 4096),
+        max_tokens=number("max_tokens", int, 1, 32768),
         temperature=number("temperature", float, 0.0, 2.0),
     )
     api_key = str(data.get("api_key") or "").strip()
@@ -561,8 +577,6 @@ def run(cfg):
              f"base_url: {cfg['base_url']}\nmodel: {cfg['model']}\n"
              f"API key: {'set' if cfg.get('api_key') else 'MISSING'}")
     print(f"  llm     {time.time() - started:.2f}s", file=sys.stderr)
-    if not answer:
-        fail("Model returned an empty answer.")
 
     print(answer)
     if copy_text(answer):
