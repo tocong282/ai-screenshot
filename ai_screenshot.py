@@ -1,6 +1,6 @@
 """Screenshot -> OCR -> LLM answer -> clipboard. Linux, macOS, Windows.
 
-Usage: ai-screenshot [--settings | --selftest | --version | --help]
+Usage: ai-screenshot [--settings | --diagnose | --selftest | --version | --help]
 
 Config: ~/.config/ai-screenshot/config.json (Linux),
         ~/Library/Application Support/ai-screenshot/config.json (macOS),
@@ -16,7 +16,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
+from typing import NoReturn
 
 APP = "ai-screenshot"
 CONFIG_PATH = None  # set by load_config()
@@ -133,6 +135,38 @@ def config_dir():
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / APP
 
 
+class AppError(Exception):
+    """Expected failure carrying a message meant for the user."""
+
+
+def fail(message) -> NoReturn:
+    raise AppError(str(message))
+
+
+def log(message):
+    """Append one line to <config>/log.txt. ponytail: whole file dropped at 1MB, no rotation."""
+    try:
+        path = config_dir() / "log.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > 1_000_000:
+            path.unlink()
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} {message}\n")
+    except OSError:
+        pass
+
+
+def report_error(exc, unexpected=False):
+    text = str(exc) if isinstance(exc, AppError) else f"{type(exc).__name__}: {exc}"
+    log(("TRACEBACK " + traceback.format_exc()) if unexpected else text)
+    print(f"ERROR: {text}", file=sys.stderr)
+    if unexpected:
+        traceback.print_exc()
+    if _frozen() or os.environ.get("AI_SCREENSHOT_NOTIFY") == "1":
+        notify(f"{text}\n\nLog: {config_dir() / 'log.txt'}")
+
+
 def save_config(cfg):
     """Write config.json next to the OS config dir, 0600 on POSIX."""
     path = config_dir() / "config.json"
@@ -155,7 +189,11 @@ def load_config(create=True):
     elif create:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         CONFIG_PATH.write_text(json.dumps(DEFAULTS, indent=2), encoding="utf-8")
-        sys.exit(f"Created config template: {CONFIG_PATH}\nFill in api_key, then rerun.")
+        if os.name != "nt":
+            CONFIG_PATH.chmod(0o600)
+        raise AppError(
+            f"Created config template: {CONFIG_PATH}\nFill in api_key (and base_url/model), then run again."
+        )
     for key, env in ENV.items():
         if os.environ.get(env):
             cfg[key] = os.environ[env]
@@ -163,32 +201,24 @@ def load_config(create=True):
 
 
 # ---------------------------------------------------------------- capture
-def capture(path):
-    """Save a full-screen grab to path. Returns True on success."""
-    system = platform_key()
-    if system == "darwin":
-        cmds = [["screencapture", "-x", "-o", path]]
-    elif system == "windows":
-        cmds = [["powershell", "-NoProfile", "-Command", _PS_CAPTURE % path]]
-    else:
-        cmds = [
-            ["spectacle", "-b", "-n", "-o", path],
-            ["grim", path],
-            ["gnome-screenshot", "-f", path],
-            ["scrot", "-o", path],
-            ["import", "-window", "root", path],
-        ]
-    for cmd in cmds:
-        if not _have(cmd[0]):
-            continue
+def _nonempty(path):
+    p = Path(path)
+    return p.exists() and p.stat().st_size > 0
+
+
+def _dpi_aware():
+    """Windows: take the screenshot in real pixels, not scaled ones."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
         try:
-            subprocess.run(cmd, capture_output=True, timeout=60)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        p = Path(path)
-        if p.exists() and p.stat().st_size > 0:
-            return True
-    return False
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 
 _PS_CAPTURE = (
@@ -200,6 +230,55 @@ _PS_CAPTURE = (
     "$bmp.Save('%s',[System.Drawing.Imaging.ImageFormat]::Png);"
     "$g.Dispose();$bmp.Dispose()"
 )
+
+
+def capture(path):
+    """Save a full-screen grab to path, or raise AppError listing every attempt."""
+    system = platform_key()
+    reasons = []
+
+    if system == "windows":
+        _dpi_aware()
+        try:
+            from PIL import ImageGrab
+
+            ImageGrab.grab(all_screens=True).save(path)
+            if _nonempty(path):
+                return
+            reasons.append("ImageGrab: empty image")
+        except Exception as exc:
+            reasons.append(f"ImageGrab: {type(exc).__name__}: {exc}")
+        cmds = [["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+                 "-Command", _PS_CAPTURE % path]]
+    elif system == "darwin":
+        cmds = [["screencapture", "-x", "-o", path]]
+    else:
+        cmds = [
+            ["spectacle", "-b", "-n", "-o", path],
+            ["grim", path],
+            ["gnome-screenshot", "-f", path],
+            ["scrot", "-o", path],
+            ["import", "-window", "root", path],
+        ]
+
+    for cmd in cmds:
+        if not _have(cmd[0]):
+            reasons.append(f"{cmd[0]}: not installed")
+            continue
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=60, text=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            reasons.append(f"{cmd[0]}: {type(exc).__name__}: {exc}")
+            continue
+        if _nonempty(path):
+            return
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        reasons.append(f"{cmd[0]}: exit {proc.returncode}" + (f", {detail[-1][:140]}" if detail else ""))
+
+    if system == "linux" and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        reasons.append("no DISPLAY/WAYLAND_DISPLAY in this shell: run it from your desktop session")
+    log("capture failed: " + " | ".join(reasons))
+    fail("Screenshot failed.\n" + "\n".join(f"- {r}" for r in reasons))
 
 
 def platform_key():
@@ -421,8 +500,7 @@ def build_settings_server(current=None):
                     fd, shot = tempfile.mkstemp(prefix="ai-screenshot-", suffix=".png")
                     os.close(fd)
                     try:
-                        if not capture(shot):
-                            raise RuntimeError("no working capture backend")
+                        capture(shot)
                         text = ocr(shot, cfg)
                     finally:
                         Path(shot).unlink(missing_ok=True)
@@ -463,31 +541,119 @@ def run(cfg):
     fd, shot = tempfile.mkstemp(prefix="ai-screenshot-", suffix=".png")
     os.close(fd)
     try:
-        if not capture(shot):
-            sys.exit("Screenshot failed: no working capture backend found.")
+        capture(shot)
         print(f"  capture {time.time() - start:.2f}s", file=sys.stderr)
 
-        t = time.time()
+        started = time.time()
+        engine = resolve_engine(cfg)
         text = ocr(shot, cfg)
-        print(f"  ocr     {time.time() - t:.2f}s ({len(text)} chars)", file=sys.stderr)
+        print(f"  ocr     {time.time() - started:.2f}s ({len(text)} chars, {engine})", file=sys.stderr)
         if not text:
-            sys.exit("No text found on screen.")
+            fail("No text found on screen (OCR returned nothing).")
     finally:
         Path(shot).unlink(missing_ok=True)
 
-    t = time.time()
-    answer = ask(text, cfg)
-    print(f"  llm     {time.time() - t:.2f}s", file=sys.stderr)
+    started = time.time()
+    try:
+        answer = ask(text, cfg)
+    except Exception as exc:
+        fail(f"Model request failed ({type(exc).__name__}: {exc})\n"
+             f"base_url: {cfg['base_url']}\nmodel: {cfg['model']}\n"
+             f"API key: {'set' if cfg.get('api_key') else 'MISSING'}")
+    print(f"  llm     {time.time() - started:.2f}s", file=sys.stderr)
     if not answer:
-        sys.exit("Model returned an empty answer.")
+        fail("Model returned an empty answer.")
 
     print(answer)
     if copy_text(answer):
         print("Copied to clipboard.", file=sys.stderr)
     else:
         print("Clipboard copy failed (answer printed above).", file=sys.stderr)
+    log(f"ok engine={engine} chars={len(text)} answer={len(answer)}")
     if _frozen() or os.environ.get("AI_SCREENSHOT_NOTIFY") == "1":
         notify(answer)
+
+
+def diagnose():
+    """Print a support report: config, engines, capture, OCR, clipboard, API."""
+    import importlib.metadata as md
+
+    rows = []
+
+    def add(label, value):
+        rows.append(f"{label}: {value}")
+
+    try:
+        version = md.version("ai-screenshot")
+    except Exception:
+        version = "unknown"
+    add("version", version)
+    add("platform", f"{platform_key()} {sys.platform}, python {sys.version.split()[0]}, frozen={_frozen()}")
+    add("config", str(config_dir() / "config.json"))
+    try:
+        cfg = load_config()
+    except AppError as exc:
+        add("config problem", str(exc))
+        cfg = dict(DEFAULTS)
+    add("base_url", cfg["base_url"])
+    add("model", cfg["model"])
+    add("api_key", "set" if cfg.get("api_key") else "MISSING")
+    try:
+        add("engine", f"{cfg.get('engine')} -> {resolve_engine(cfg)}")
+    except Exception as exc:
+        add("engine", f"FAIL {exc}")
+    add("tesseract", shutil.which("tesseract") or "not on PATH")
+    try:
+        import rapidocr_onnxruntime as rapid
+
+        add("rapidocr", f"importable ({rapid.__file__})")
+    except Exception as exc:
+        add("rapidocr", f"import failed: {type(exc).__name__}: {exc}")
+
+    healthy = True
+    fd, shot = tempfile.mkstemp(prefix="ai-screenshot-diag-", suffix=".png")
+    os.close(fd)
+    try:
+        started = time.time()
+        try:
+            capture(shot)
+            add("capture", f"ok, {os.path.getsize(shot)} bytes in {time.time() - started:.2f}s")
+        except AppError as exc:
+            add("capture", f"FAIL {exc}")
+            healthy = False
+        if _nonempty(shot):
+            started = time.time()
+            try:
+                text = ocr(shot, cfg)
+                add("ocr", f"ok, {len(text)} chars in {time.time() - started:.2f}s: {text[:80]!r}")
+            except Exception as exc:
+                add("ocr", f"FAIL {type(exc).__name__}: {exc}")
+                healthy = False
+    finally:
+        Path(shot).unlink(missing_ok=True)
+
+    add("clipboard", "ok" if copy_text("ai-screenshot diagnose") else "no backend")
+    started = time.time()
+    try:
+        answer = ask("Reply with the single word OK.", cfg)
+        add("api", f"ok in {time.time() - started:.2f}s: {answer[:60]!r}")
+    except Exception as exc:
+        add("api", f"FAIL {type(exc).__name__}: {exc}")
+        healthy = False
+
+    text_out = "\n".join(rows)
+    print(text_out)
+    log("diagnose: " + text_out.replace("\n", " | "))
+    dest = config_dir() / "diagnose.txt"
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(text_out + "\n", encoding="utf-8")
+    except OSError:
+        dest = "unavailable"
+    if not sys.stdout.isatty():
+        notify(text_out + f"\n\nSaved: {dest}")
+    if not healthy:
+        sys.exit(1)
 
 
 def selftest():
@@ -593,6 +759,8 @@ def main(argv=None):
     try:
         if "--selftest" in argv:
             selftest()
+        elif "--diagnose" in argv:
+            diagnose()
         elif "--settings" in argv or "--gui" in argv:
             serve_settings()
         elif "--version" in argv:
@@ -608,6 +776,12 @@ def main(argv=None):
             run(load_config())
     except KeyboardInterrupt:
         sys.exit(130)
+    except AppError as exc:
+        report_error(exc)
+        sys.exit(1)
+    except Exception as exc:
+        report_error(exc, unexpected=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ Name: "desktopicon"; Description: "Desktop shortcut (Ctrl+Alt+Q)"; GroupDescript
 [Icons]
 Name: "{group}\Capture and answer"; Filename: "{app}\ai-screenshot.exe"; Hotkey: ctrl+alt+q
 Name: "{group}\Settings"; Filename: "{app}\ai-screenshot.exe"; Parameters: "--settings"; Hotkey: ctrl+alt+s
+Name: "{group}\Diagnostics (copy this text if it fails)"; Filename: "{app}\ai-screenshot.exe"; Parameters: "--diagnose"
 Name: "{group}\Uninstall ai-screenshot"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\ai-screenshot"; Filename: "{app}\ai-screenshot.exe"; Hotkey: ctrl+alt+q; Tasks: desktopicon
 

@@ -16,6 +16,21 @@ Download from [Releases](https://github.com/tocong282/ai-screenshot/releases):
 | macOS (Apple Silicon) | `ai-screenshot-<version>-macos-arm64.dmg` | drag to Applications |
 | Linux x64 | `ai-screenshot-<version>-linux-x64.tar.gz` | `tar xzf`, run `./ai-screenshot` |
 
+Linux quick start:
+
+```bash
+mkdir -p ~/.local/bin
+tar xzf ai-screenshot-0.3.0-linux-x64.tar.gz -C ~/.local/bin
+chmod +x ~/.local/bin/ai-screenshot
+ai-screenshot --settings      # set base_url, model, api key
+ai-screenshot                  # capture -> answer on clipboard
+```
+
+Needs a graphical session (`DISPLAY` or `WAYLAND_DISPLAY`) and one capture tool:
+`spectacle` (KDE), `grim` (wlroots), `gnome-screenshot`, `scrot` or ImageMagick
+`import`. Clipboard: `wl-copy`, `xclip` or `xsel`. `ai-screenshot --diagnose`
+tells you exactly which of those is missing.
+
 These builds bundle the OCR engine (RapidOCR, ONNX) — Tesseract is **not**
 required. Intel Macs and other Linux archs: use the source install below.
 
@@ -78,6 +93,25 @@ Any key can be overridden by env: `AI_SCREENSHOT_BASE_URL`,
 
 `tessdata_dir` is optional — point it at a directory of `*.traineddata` when the
 system Tesseract has no English data (`--tessdata-dir`).
+
+## When it does nothing
+
+Run the diagnostics build — it prints (and pops up, in the packaged app) a
+report for config, capture backend, OCR, clipboard and API:
+
+```bash
+ai-screenshot --diagnose        # Windows: Start Menu -> Diagnostics
+```
+
+Report is also saved to `diagnose.txt` next to `config.json`, and every run
+appends to `log.txt` there. Common causes:
+
+- `capture: FAIL ...` — no graphical session (SSH/service), or missing capture
+  tool on Linux.
+- `api: FAIL APIConnectionError` — `base_url` unreachable. The default
+  `http://localhost:20128/v1` is a **local** proxy; on another machine point it
+  at the real endpoint or start the proxy there.
+- `api_key: MISSING` — fill it in `--settings`.
 
 ## Use
 
